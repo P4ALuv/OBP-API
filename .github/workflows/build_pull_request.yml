@@ -28,15 +28,23 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
       - name: Set up JDK 11
         uses: actions/setup-java@v2
         with:
           java-version: '11'
           distribution: 'adopt'
           cache: maven
-      - name: Build with Maven
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+      - name: Setup test configuration
         run: |
-          cp obp-api/src/main/resources/props/sample.props.template obp-api/src/main/resources/props/production.default.props
+          cp obp-api/src/main/resources/props/sample.props.template obp-api/src/main/resources/props/test.default.props
           echo connector=star > obp-api/src/main/resources/props/test.default.props
           echo starConnector_supported_types=mapped,internal >> obp-api/src/main/resources/props/test.default.props
           echo hostname=http://localhost:8016 >> obp-api/src/main/resources/props/test.default.props
@@ -74,16 +82,53 @@ jobs:
           echo ResetPasswordUrlEnabled=true >> obp-api/src/main/resources/props/test.default.props
 
           echo consents.allowed=true >> obp-api/src/main/resources/props/test.default.props
+      - name: Run tests and generate coverage report
+        run: |
+          MAVEN_OPTS="-Xmx3G -Xss2m" mvn clean verify jacoco:report -Pprod
+      - name: SonarCloud Scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn sonar:sonar \
+            -Dsonar.organization=openbankproject \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.projectKey=OpenBankProject_OBP-API
+      - name: Run Dependency Check
+        run: mvn org.owasp:dependency-check-maven:check
+      - name: Check code style
+        run: mvn checkstyle:check
+      - name: Build package
+        run: |
           MAVEN_OPTS="-Xmx3G -Xss2m" mvn clean package -Pprod
-      - name: Save user name and .war artifact
+      - name: Save artifacts
         run: |
           mkdir -p ./pr
           echo ${{ github.event.pull_request.user.login }} > ./pr/UN
-          cp obp-api/target/obp-api-1.10.1.war ./pr/obp-api-1.10.1.war
+          cp obp-api/target/obp-api-1.10.1.war ./pr/
+          cp target/dependency-check-report.html ./pr/
+          cp target/site/jacoco/index.html ./pr/coverage-report.html
       - uses: actions/upload-artifact@v4
         with:
           name: pr
           path: pr/
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
 
 
 
